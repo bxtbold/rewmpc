@@ -1,0 +1,105 @@
+defaults:
+    - override hydra/launcher: submitit_local
+
+# environment
+task: mt30
+obs: state
+episodic: false
+
+# evaluation
+checkpoint: ???
+eval_episodes: 10
+eval_freq: 50000
+
+# data
+data_dir: ???
+buffer_size: 1_000_000
+
+# training phases
+phase1_steps: 500_000     # world model (JEPA + SigReg)
+phase2_steps: 500_000     # reward + value surrogates
+phase3_steps: 1_000_000   # flow prior
+
+# shared training hyperparameters
+batch_size: 256
+horizon: 5
+lr: 3e-4
+flow_lr: 1e-4
+enc_lr_scale: 0.3
+grad_clip_norm: 20
+ema_tau: 0.005             # EMA encoder Polyak coefficient
+tau: 0.01                  # for RunningScale
+rho: 0.5                   # temporal decay for JEPA loss
+exp_name: default
+
+# world model losses
+jepa_coef: 1.0
+sigreg_coef: 0.1
+
+# value surrogate
+num_bins: 101
+vmin: -10
+vmax: +10
+td_lambda: 0.95            # λ for N-step TD targets
+num_value_heads: 5
+discount_denom: 5
+discount_min: 0.95
+discount_max: 0.995
+
+# reward surrogate
+num_reward_heads: 5
+lcb_beta: 1.0              # β for R_lcb = mean - β·std
+rank_loss_coef: 0.1        # weight on ranking loss
+
+# flow prior (training)
+flow_alpha_train: 2.0      # α for return-weighted softmax
+flow_bootstrap_frac: 0.05  # fraction of phase3_steps to train with uniform weights
+flow_mlp_dim: 512          # hidden dim of flow velocity network
+
+# planning (evaluation)
+flow_modes: 8              # M parallel initializations from flow prior
+flow_nfe: 10               # Euler ODE steps at inference
+flow_alpha: 0.5            # α conservatism weight in planning cost
+grad_plan_steps: 5         # K gradient refinement steps per mode
+grad_plan_lr: 0.05         # η planning step size
+plan_noise_std: 0.05       # exploration noise added to selected action
+
+# action regularization in planning cost
+action_reg_u: 0.01         # λ_u: action magnitude penalty
+action_reg_delta: 0.01     # λ_Δ: action smoothness penalty
+
+# architecture
+model_size: 5
+num_enc_layers: 2
+enc_dim: 256
+mlp_dim: 512
+latent_dim: 512
+task_dim: 96
+dropout: 0.01
+simnorm_dim: 8
+
+# logging
+wandb_project: ???
+wandb_entity: ???
+wandb_silent: false
+enable_wandb: true
+save_csv: true
+
+# misc
+save_agent: true
+seed: 1
+
+# convenience (filled by parse_cfg)
+work_dir: ???
+task_title: ???
+multitask: ???
+tasks: ???
+obs_shape: ???
+action_dim: ???
+episode_length: ???
+obs_shapes: ???
+action_dims: ???
+episode_lengths: ???
+seed_steps: ???
+bin_size: ???
+flow_context_dim: ???

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rewmpc"
+version = "0.1.0"
+description = "ReW-MPC: Offline Reward Distillation for Reward-Free Online Planning"
+authors = [
+    { name = "Bat" }
+]
+maintainers = [
+    { name = "Bat", email = "bxtbold@pm.me" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "hydra-core>=1.3",
+    "hydra-submitit-launcher",
+    "tensordict>=0.4",
+    "torchrl>=0.4",
+    "numpy",
+    "pandas",
+    "termcolor",
+    "tqdm",
+    "wandb",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rewmpc*"]
+
+[project.scripts]
+rewmpc-train = "rewmpc.train:train"
+rewmpc-eval  = "rewmpc.evaluate:evaluate"

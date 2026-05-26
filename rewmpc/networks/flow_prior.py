@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from common import layers, init
+from networks import init, layers
 
 
 class FlowPrior(nn.Module):

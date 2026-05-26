@@ -3,9 +3,9 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from common import math_utils
-from common.world_model import WorldModel
-from common.surrogates import RewardSurrogate, ValueSurrogate
-from common.flow_prior import FlowPrior, compute_return_weights
+from networks.world_model import WorldModel
+from networks.surrogates import RewardSurrogate, ValueSurrogate
+from networks.flow_prior import FlowPrior, compute_return_weights
 
 
 class ReWMPC(nn.Module):

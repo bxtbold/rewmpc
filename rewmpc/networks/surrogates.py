@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from common import layers, init, math_utils
+from common import math_utils
+from networks import init, layers
 
 
 class RewardSurrogate(nn.Module):

@@ -77,26 +77,32 @@ class FlowPrior(nn.Module):
 		return loss
 
 	@torch.no_grad()
-	def sample(self, context, M, nfe=10):
+	def sample(self, context, M, nfe=10, tau_warm=None, s_start=0.0):
 		"""
 		Generate M trajectory proposals via Euler ODE integration.
 
 		Args:
-			context: (1, context_dim) or (M, context_dim)
-			M:       number of parallel proposals
-			nfe:     number of function evaluations (Euler steps)
+			context:  (1, context_dim) or (M, context_dim)
+			M:        number of parallel proposals
+			nfe:      number of function evaluations (Euler steps) for full trajectory
+			tau_warm: (M, traj_dim) optional warm-start point in trajectory space
+			s_start:  flow time to start integration from (0 = pure noise, >0 = warm start)
 
 		Returns:
 			tau: (M, H, action_dim) action trajectories
 		"""
-		B = M
 		if context.shape[0] == 1:
 			context = context.expand(M, -1)
 
-		tau = torch.randn(B, self._traj_dim, device=context.device)
+		if tau_warm is not None:
+			tau = tau_warm
+		else:
+			tau = torch.randn(M, self._traj_dim, device=context.device)
+
 		dt = 1.0 / nfe
-		for i in range(nfe):
-			s = torch.full((B, 1), i * dt, device=context.device)
+		start_step = round(s_start * nfe)
+		for i in range(start_step, nfe):
+			s = torch.full((M, 1), i * dt, device=context.device)
 			v = self.velocity(tau, s, context)
 			tau = tau + dt * v
 

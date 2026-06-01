@@ -49,6 +49,8 @@ class ReWMPC(nn.Module):
 
 		# Per-episode GRU hidden state, updated in act()
 		self._h = torch.nn.Buffer(torch.zeros(1, cfg.latent_dim, device=self.device))
+		# Warm-start state: refined trajectories from previous planning step
+		self._tau_prev = None
 
 		self.model.eval()
 		self.reward_surrogate.eval()
@@ -95,6 +97,7 @@ class ReWMPC(nn.Module):
 				task = torch.tensor([task], device=self.device)
 			if t0:
 				self._h.zero_()
+				self._tau_prev = None
 			z = self.model.encode(obs, task).detach()
 			h = self._h.clone().detach()
 
@@ -116,7 +119,22 @@ class ReWMPC(nn.Module):
 
 		with torch.no_grad():
 			context = self.model.context(h_t, z_t, task)
-			tau_init = self.flow_prior.sample(context, M=cfg.flow_modes, nfe=cfg.flow_nfe)
+
+			sigma = getattr(cfg, 'flow_warm_noise', 0.0)
+			if self._tau_prev is not None and sigma > 0:
+				# Shift plan forward by 1 step (first action was executed), pad end with zeros
+				tau_shifted = torch.cat([
+					self._tau_prev[:, 1:, :],
+					torch.zeros(cfg.flow_modes, 1, cfg.action_dim, device=self.device),
+				], dim=1).reshape(cfg.flow_modes, -1)
+				# Mix with noise and re-run the tail of the flow ODE
+				tau_warm = (1 - sigma) * tau_shifted + sigma * torch.randn_like(tau_shifted)
+				tau_warm = tau_warm.clamp(-1., 1.)
+				s_start = 1.0 - sigma
+				tau_init = self.flow_prior.sample(context, M=cfg.flow_modes, nfe=cfg.flow_nfe,
+				                                  tau_warm=tau_warm, s_start=s_start)
+			else:
+				tau_init = self.flow_prior.sample(context, M=cfg.flow_modes, nfe=cfg.flow_nfe)
 
 		# Freeze model parameters during planning so backward only touches tau
 		frozen_params = (
@@ -155,6 +173,7 @@ class ReWMPC(nn.Module):
 				p.requires_grad_(req)
 
 		best = final_J.argmin()
+		self._tau_prev = tau.detach()  # (M, H, A) — store all modes for next warm start
 		a = tau[best, 0].detach()  # (action_dim,)
 
 		if not eval_mode:

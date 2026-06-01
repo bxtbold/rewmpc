@@ -57,6 +57,7 @@ rank_loss_coef: 0.1        # weight on ranking loss
 # flow prior (training)
 flow_alpha_train: 2.0      # α for return-weighted softmax
 flow_bootstrap_frac: 0.05  # fraction of phase3_steps to train with uniform weights
+flow_warm_noise: 0.5       # warm-start noise σ: mix previous plan with noise before re-running flow
 flow_mlp_dim: 512          # hidden dim of flow velocity network
 
 # planning (evaluation)

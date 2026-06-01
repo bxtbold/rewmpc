@@ -289,10 +289,11 @@ class ReWMPC(nn.Module):
 		H = action.shape[0]
 
 		# --- Reward surrogate ---
-		reward_loss = 0.
-		for t in range(H):
-			reward_loss = reward_loss + self.reward_surrogate.mse_loss(zs[t], action[t], reward[t])
-		reward_loss = reward_loss / H
+		z_rwd = zs[:H].reshape(H * B, -1).detach()
+		a_rwd = action.reshape(H * B, -1)
+		r_rwd = reward.reshape(H * B, 1)
+		reward_preds = self.reward_surrogate(z_rwd, a_rwd)   # (K, H*B, 1)
+		reward_loss = (reward_preds - r_rwd.unsqueeze(0)).pow(2).mean()
 
 		if self.cfg.rank_loss_coef > 0 and B >= 4:
 			returns = reward.sum(0).squeeze(-1)  # (B,)

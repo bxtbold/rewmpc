@@ -7,7 +7,7 @@ from networks import init, layers
 
 class RewardSurrogate(nn.Module):
 	"""
-	Ensemble of spectrally-normalized MLPs for reward prediction.
+	Ensemble of MLPs for reward prediction.
 	Trained offline on reward-labeled demonstrations with stop-gradient from encoder.
 	At planning time, uses LCB: R_lcb = mean - β·std across ensemble heads.
 	"""
@@ -16,8 +16,8 @@ class RewardSurrogate(nn.Module):
 		super().__init__()
 		self.cfg = cfg
 		in_dim = cfg.latent_dim + cfg.action_dim
-		self._heads = nn.ModuleList([
-			layers.spectral_norm_mlp(in_dim, 2 * [cfg.mlp_dim], 1)
+		self._heads = layers.Ensemble([
+			layers.mlp(in_dim, 2 * [cfg.mlp_dim], 1)
 			for _ in range(cfg.num_reward_heads)
 		])
 		self.apply(init.weight_init)
@@ -25,7 +25,7 @@ class RewardSurrogate(nn.Module):
 	def forward(self, z, a):
 		"""Returns rewards from all heads. Shape: (K, B, 1)."""
 		inp = torch.cat([z, a], dim=-1)
-		return torch.stack([head(inp) for head in self._heads], dim=0)
+		return self._heads(inp)
 
 	def lcb(self, z, a, beta=None):
 		"""LCB estimate: mean - β·std across ensemble. Shape: (B, 1)."""

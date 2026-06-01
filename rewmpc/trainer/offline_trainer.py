@@ -51,12 +51,17 @@ class OfflineTrainer(Trainer):
 
 	def _load_dataset(self):
 		"""Load TD-MPC2-compatible offline dataset."""
-		fp = Path(os.path.join(self.cfg.data_dir, '*.pt'))
-		fps = sorted(glob(str(fp)))
-		assert len(fps) > 0, f'No data found at {fp}'
-		print(f'Found {len(fps)} files in {fp}')
+		if self.cfg.task.startswith('mw-'):
+			# Single-task: look for <task>.pt in data_dir
+			fps = [str(Path(self.cfg.data_dir) / f'{self.cfg.task}.pt')]
+			assert Path(fps[0]).exists(), f'No data found at {fps[0]}'
+		else:
+			fp = Path(os.path.join(self.cfg.data_dir, '*.pt'))
+			fps = sorted(glob(str(fp)))
+			assert len(fps) > 0, f'No data found at {fp}'
+		print(f'Found {len(fps)} files in {self.cfg.data_dir}')
 		n_expected = 20 if self.cfg.task == 'mt80' else 4
-		if len(fps) < n_expected:
+		if not self.cfg.task.startswith('mw-') and len(fps) < n_expected:
 			print(f'WARNING: expected {n_expected} files, found {len(fps)}.')
 
 		_cfg = deepcopy(self.cfg)
@@ -108,7 +113,7 @@ class OfflineTrainer(Trainer):
 				obs, action, _reward, task = self._sample_batch()
 				train_metrics = self.agent.update_world(obs, action, task)
 
-				if i % 10_000 == 0:
+				if i % 5_000 == 0:
 					metrics = {
 						'iteration': i,
 						'elapsed_time': time() - self._start_time,
@@ -129,7 +134,7 @@ class OfflineTrainer(Trainer):
 				obs, action, reward, task = self._sample_batch()
 				train_metrics = self.agent.update_surrogates(obs, action, reward, task)
 
-				if i % 10_000 == 0:
+				if i % 5_000 == 0:
 					metrics = {
 						'iteration': self.cfg.phase1_steps + i,
 						'elapsed_time': time() - self._start_time,
@@ -161,7 +166,7 @@ class OfflineTrainer(Trainer):
 				self.logger.log(metrics, 'pretrain')
 				if i > 0:
 					self.logger.save_agent(self.agent, identifier=f'phase3_{i}')
-			elif i % 10_000 == 0:
+			elif i % 5_000 == 0:
 				metrics = {
 					'iteration': step_global,
 					'elapsed_time': time() - self._start_time,

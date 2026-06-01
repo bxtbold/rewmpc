@@ -31,11 +31,12 @@ class Buffer:
 		return self._num_eps
 
 	def _reserve_buffer(self, storage):
+		on_cpu = self._storage_device.type == 'cpu'
 		return ReplayBuffer(
 			storage=storage,
 			sampler=self._sampler,
-			pin_memory=False,
-			prefetch=0,
+			pin_memory=on_cpu,
+			prefetch=4 if on_cpu else 0,
 			batch_size=self._batch_size,
 		)
 

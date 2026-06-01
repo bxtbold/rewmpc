@@ -68,4 +68,7 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 	# Flow prior context dim: h_t + z_t + task_emb
 	cfg.flow_context_dim = 2 * cfg.latent_dim + cfg.task_dim
 
+	# Total offline training steps (used by Buffer and Logger)
+	cfg.steps = cfg.phase1_steps + cfg.phase2_steps + cfg.phase3_steps
+
 	return cfg_to_dataclass(cfg)

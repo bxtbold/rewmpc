@@ -60,8 +60,15 @@ class OfflineTrainer(Trainer):
 			print(f'WARNING: expected {n_expected} files, found {len(fps)}.')
 
 		_cfg = deepcopy(self.cfg)
-		_cfg.episode_length = 101 if self.cfg.task == 'mt80' else 501
-		_cfg.buffer_size = 550_450_000 if self.cfg.task == 'mt80' else 345_690_000
+		# MetaWorld tasks (mt10, mt80, and single mw-*) use 101-step episodes
+		_is_mw = self.cfg.task in {'mt10', 'mt80'} or self.cfg.task.startswith('mw-')
+		_cfg.episode_length = 101 if _is_mw else 501
+		_cfg.buffer_size = (
+			550_450_000 if self.cfg.task == 'mt80' else
+			50_000_000  if self.cfg.task == 'mt10' else
+			5_000_000   if self.cfg.task.startswith('mw-') else
+			345_690_000
+		)
 		_cfg.steps = _cfg.buffer_size
 		self.buffer = Buffer(_cfg)
 		for fp in tqdm(fps, desc='Loading data'):
@@ -76,46 +83,62 @@ class OfflineTrainer(Trainer):
 		obs, action, reward, _terminated, task = self.buffer.sample()
 		return obs, action, reward, task
 
+	def _load_phase(self, identifier):
+		"""Load a saved phase checkpoint from the run's model directory."""
+		fp = self.logger.model_dir / f'{identifier}.pt'
+		assert fp.exists(), f'Checkpoint not found: {fp}'
+		self.agent.load(str(fp))
+		print(f'Loaded checkpoint: {fp}')
+
 	def train(self):
 		"""Run the 3-phase training curriculum."""
-		assert self.cfg.multitask and self.cfg.task in {'mt30', 'mt80'}, \
-			'Offline training requires multitask=True with task=mt30 or mt80.'
+		assert self.cfg.task in {'mt10', 'mt30', 'mt80'} or self.cfg.task.startswith('mw-'), \
+			'Offline training requires task=mt10/mt30/mt80 or a single mw-<task>.'
 		self._load_dataset()
 		metrics = {}
+		resume_phase = getattr(self.cfg, 'resume_phase', 0)
 
 		# ---- Phase 1: World model ----
-		print(f'\n[Phase 1] Training world model for {self.cfg.phase1_steps} steps...')
-		for i in tqdm(range(self.cfg.phase1_steps), desc='Phase 1'):
-			obs, action, _reward, task = self._sample_batch()
-			train_metrics = self.agent.update_world(obs, action, task)
+		if resume_phase >= 2:
+			print('[Phase 1] Skipped — loading saved checkpoint.')
+			self._load_phase('phase1')
+		else:
+			print(f'\n[Phase 1] Training world model for {self.cfg.phase1_steps} steps...')
+			for i in tqdm(range(self.cfg.phase1_steps), desc='Phase 1'):
+				obs, action, _reward, task = self._sample_batch()
+				train_metrics = self.agent.update_world(obs, action, task)
 
-			if i % 10_000 == 0:
-				metrics = {
-					'iteration': i,
-					'elapsed_time': time() - self._start_time,
-				}
-				metrics.update({k: v.item() for k, v in train_metrics.items()})
-				self.logger.log(metrics, 'pretrain')
+				if i % 10_000 == 0:
+					metrics = {
+						'iteration': i,
+						'elapsed_time': time() - self._start_time,
+					}
+					metrics.update({k: v.item() for k, v in train_metrics.items()})
+					self.logger.log(metrics, 'pretrain')
 
-		self.logger.save_agent(self.agent, identifier='phase1')
-		print('[Phase 1] Complete.')
+			self.logger.save_agent(self.agent, identifier='phase1')
+			print('[Phase 1] Complete.')
 
 		# ---- Phase 2: Surrogates ----
-		print(f'\n[Phase 2] Training reward + value surrogates for {self.cfg.phase2_steps} steps...')
-		for i in tqdm(range(self.cfg.phase2_steps), desc='Phase 2'):
-			obs, action, reward, task = self._sample_batch()
-			train_metrics = self.agent.update_surrogates(obs, action, reward, task)
+		if resume_phase >= 3:
+			print('[Phase 2] Skipped — loading saved checkpoint.')
+			self._load_phase('phase2')
+		else:
+			print(f'\n[Phase 2] Training reward + value surrogates for {self.cfg.phase2_steps} steps...')
+			for i in tqdm(range(self.cfg.phase2_steps), desc='Phase 2'):
+				obs, action, reward, task = self._sample_batch()
+				train_metrics = self.agent.update_surrogates(obs, action, reward, task)
 
-			if i % 10_000 == 0:
-				metrics = {
-					'iteration': self.cfg.phase1_steps + i,
-					'elapsed_time': time() - self._start_time,
-				}
-				metrics.update({k: v.item() for k, v in train_metrics.items()})
-				self.logger.log(metrics, 'pretrain')
+				if i % 10_000 == 0:
+					metrics = {
+						'iteration': self.cfg.phase1_steps + i,
+						'elapsed_time': time() - self._start_time,
+					}
+					metrics.update({k: v.item() for k, v in train_metrics.items()})
+					self.logger.log(metrics, 'pretrain')
 
-		self.logger.save_agent(self.agent, identifier='phase2')
-		print('[Phase 2] Complete.')
+			self.logger.save_agent(self.agent, identifier='phase2')
+			print('[Phase 2] Complete.')
 
 		# ---- Phase 3: Flow prior ----
 		print(f'\n[Phase 3] Training flow prior for {self.cfg.phase3_steps} steps...')
@@ -126,7 +149,7 @@ class OfflineTrainer(Trainer):
 			train_metrics = self.agent.update_flow(obs, action, reward, task, use_weights=use_weights)
 
 			step_global = self.cfg.phase1_steps + self.cfg.phase2_steps + i
-			if i % self.cfg.eval_freq == 0:
+			if i > 0 and i % self.cfg.eval_freq == 0:
 				eval_metrics = self.eval()
 				metrics = {
 					'iteration': step_global,

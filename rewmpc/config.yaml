@@ -2,23 +2,25 @@ defaults:
     - override hydra/launcher: submitit_local
 
 # environment
-task: mt30
+task: mw-reach
 obs: state
 episodic: false
 
 # evaluation
 checkpoint: ???
-eval_episodes: 10
-eval_freq: 50000
+eval_episodes: 3
+eval_freq: 200000
 
 # data
 data_dir: ???
 buffer_size: 1_000_000
 
 # training phases
-phase1_steps: 500_000     # world model (JEPA + SigReg)
-phase2_steps: 500_000     # reward + value surrogates
+phase1_steps: 100_000     # world model (JEPA + SigReg)
+phase2_steps: 100_000     # reward + value surrogates
 phase3_steps: 1_000_000   # flow prior
+steps: 0                  # filled by parse_cfg: phase1 + phase2 + phase3
+resume_phase: 0           # 0=start fresh, 2=load phase1.pt and skip to phase 2, 3=load phase2.pt and skip to phase 3
 
 # shared training hyperparameters
 batch_size: 256
@@ -57,10 +59,10 @@ flow_bootstrap_frac: 0.05  # fraction of phase3_steps to train with uniform weig
 flow_mlp_dim: 512          # hidden dim of flow velocity network
 
 # planning (evaluation)
-flow_modes: 8              # M parallel initializations from flow prior
-flow_nfe: 10               # Euler ODE steps at inference
+flow_modes: 4              # M parallel initializations from flow prior
+flow_nfe: 5                # Euler ODE steps at inference
 flow_alpha: 0.5            # α conservatism weight in planning cost
-grad_plan_steps: 5         # K gradient refinement steps per mode
+grad_plan_steps: 3         # K gradient refinement steps per mode
 grad_plan_lr: 0.05         # η planning step size
 plan_noise_std: 0.05       # exploration noise added to selected action
 

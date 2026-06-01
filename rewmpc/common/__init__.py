@@ -1,3 +1,9 @@
+MT10_TASKS = [
+	'mw-reach', 'mw-push', 'mw-pick-place', 'mw-door-open', 'mw-drawer-open',
+	'mw-drawer-close', 'mw-button-press-topdown', 'mw-peg-insert-side',
+	'mw-window-open', 'mw-window-close',
+]
+
 MODEL_SIZE = {
 	1:   {'enc_dim': 256,  'mlp_dim': 384,  'latent_dim': 128, 'num_enc_layers': 2},
 	5:   {'enc_dim': 256,  'mlp_dim': 512,  'latent_dim': 512, 'num_enc_layers': 2},
@@ -6,6 +12,7 @@ MODEL_SIZE = {
 }
 
 TASK_SET = {
+	'mt10': MT10_TASKS,
 	'mt30': [
 		'walker-stand', 'walker-walk', 'walker-run', 'cheetah-run', 'reacher-easy',
 		'reacher-hard', 'acrobot-swingup', 'pendulum-swingup', 'cartpole-balance', 'cartpole-balance-sparse',

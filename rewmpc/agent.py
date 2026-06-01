@@ -221,12 +221,14 @@ class ReWMPC(nn.Module):
 		"""
 		self.model.train()
 		H = action.shape[0]
+		H1, B = obs.shape[0], obs.shape[1]  # H1 = H+1
 
-		# Live latents (gradient flows through encoder)
-		zs_live = torch.stack([self.model.encode(obs[t], task) for t in range(H + 1)])  # (H+1, B, D)
+		# Vectorized encode: run all (H+1)*B observations through encoder in one pass
+		obs_flat = obs.reshape(H1 * B, obs.shape[-1])
+		task_flat = task.repeat(H1) if task is not None else None
 
-		# EMA-target latents (stop-gradient)
-		zs_ema = torch.stack([self.model.encode_ema(obs[t], task) for t in range(1, H + 1)])  # (H, B, D)
+		zs_live = self.model.encode(obs_flat, task_flat).view(H1, B, -1)  # (H+1, B, D)
+		zs_ema = self.model.encode_ema(obs_flat[B:], task_flat[B:] if task_flat is not None else None).view(H, B, -1)  # (H, B, D)
 
 		# GRU hidden states h_1..h_H from (z_0..z_{H-1}, a_0..a_{H-1})
 		hs = self.model.gru_rollout(zs_live[:-1], action)  # (H, B, D)
@@ -279,10 +281,12 @@ class ReWMPC(nn.Module):
 		self.value_surrogate.train()
 
 		with torch.no_grad():
-			zs = torch.stack([self.model.encode(obs[t], task) for t in range(obs.shape[0])])
+			T, B = obs.shape[0], obs.shape[1]
+			obs_flat = obs.reshape(T * B, obs.shape[-1])
+			task_flat = task.repeat(T) if task is not None else None
+			zs = self.model.encode(obs_flat, task_flat).view(T, B, -1)
 
 		H = action.shape[0]
-		B = obs.shape[1]
 
 		# --- Reward surrogate ---
 		reward_loss = 0.
@@ -341,11 +345,13 @@ class ReWMPC(nn.Module):
 		self.flow_prior.train()
 
 		with torch.no_grad():
-			zs = torch.stack([self.model.encode(obs[t], task) for t in range(obs.shape[0])])
-			h0 = torch.zeros(obs.shape[1], self.cfg.latent_dim, device=self.device)
+			T, B = obs.shape[0], obs.shape[1]
+			obs_flat = obs.reshape(T * B, obs.shape[-1])
+			task_flat = task.repeat(T) if task is not None else None
+			zs = self.model.encode(obs_flat, task_flat).view(T, B, -1)
+			h0 = torch.zeros(B, self.cfg.latent_dim, device=self.device)
 			context = self.model.context(h0, zs[0], task)
 
-		B = action.shape[1]
 		# Demonstration trajectories as target: flatten (H, B, A) → (B, H*A)
 		tau_1 = action.permute(1, 0, 2).reshape(B, -1)
 

@@ -71,7 +71,8 @@ def make_env(cfg):
 		raise ValueError(f'Task {task_id} not found in MT10. Available: {list(mt10.train_classes)}')
 
 	EnvCls = mt10.train_classes[task_id]
-	raw_env = EnvCls()
+	render_mode = 'rgb_array' if getattr(cfg, 'save_video', False) else None
+	raw_env = EnvCls() if render_mode is None else EnvCls(render_mode=render_mode)
 	tasks = [t for t in mt10.train_tasks if t.env_name == task_id]
 
 	env = MetaWorldWrapper(raw_env, tasks, cfg)

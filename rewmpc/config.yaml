@@ -7,7 +7,8 @@ obs: state
 episodic: false
 
 # evaluation
-checkpoint: ???
+checkpoint: null
+save_video: false
 eval_episodes: 3
 eval_freq: 200000
 

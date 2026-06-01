@@ -130,6 +130,13 @@ class Logger:
                 artifact.add_file(fp)
                 self._wandb.log_artifact(artifact)
 
+    def save_video(self, frames, tag):
+        """Save a list of RGB numpy arrays as an MP4 using imageio."""
+        import imageio
+        video_dir = self._log_dir / 'videos'
+        video_dir.mkdir(exist_ok=True)
+        imageio.mimsave(str(video_dir / f'{tag}.mp4'), frames, fps=30)
+
     def finish(self, agent=None):
         try:
             self.save_agent(agent)

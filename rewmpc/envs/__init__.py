@@ -34,16 +34,20 @@ def make_multitask_env(cfg):
 
 
 def make_env(cfg):
-	"""Make an environment. Supports MetaWorld MT10 (state-based)."""
+	"""Make an environment. Supports MetaWorld MT10 (state-based) and pm-* toys."""
 	if getattr(cfg, 'multitask', False):
 		env = make_multitask_env(cfg)
+	elif cfg.task.startswith('pm-'):
+		from envs.point_mass import make_env as make_pm_env
+		env = make_pm_env(cfg)
+		env = TensorWrapper(env)
 	else:
 		try:
 			env = make_metaworld_env(cfg)
 		except ValueError:
 			raise ValueError(
 				f'Failed to make environment "{cfg.task}": check that metaworld is installed '
-				f'and the task name is valid (expected mw-<name>).'
+				f'and the task name is valid (expected mw-<name> or pm-<name>).'
 			)
 		env = TensorWrapper(env)
 

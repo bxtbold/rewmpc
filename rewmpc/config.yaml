@@ -13,15 +13,16 @@ eval_episodes: 3
 eval_freq: 200000
 
 # data
-data_dir: ???
+data_dir: /root/ws/rewmpc/datasets/single_task
 buffer_size: 1_000_000
 
 # training phases
 phase1_steps: 100_000     # world model (JEPA + SigReg)
 phase2_steps: 100_000     # reward + value surrogates
-phase3_steps: 1_000_000   # flow prior
+phase3_steps: 250_000     # flow prior
 steps: 0                  # filled by parse_cfg: phase1 + phase2 + phase3
-resume_phase: 0           # 0=start fresh, 2=load phase1.pt and skip to phase 2, 3=load phase2.pt and skip to phase 3
+resume_phase: 0           # 0=start fresh, 2=load phase1.pt→phase2, 3=load phase2.pt→phase3, 4=load final.pt→continue phase3
+phase3_start_step: 0      # step to resume phase 3 from (used with resume_phase=4)
 
 # shared training hyperparameters
 batch_size: 256
@@ -34,6 +35,7 @@ ema_tau: 0.005             # EMA encoder Polyak coefficient
 tau: 0.01                  # for RunningScale
 rho: 0.5                   # temporal decay for JEPA loss
 exp_name: default
+run_id: ""               # "" = shared dir (default); "auto" = timestamp suffix; any string = custom suffix
 
 # world model losses
 jepa_coef: 1.0
@@ -59,6 +61,18 @@ flow_alpha_train: 2.0      # α for return-weighted softmax
 flow_bootstrap_frac: 0.05  # fraction of phase3_steps to train with uniform weights
 flow_warm_noise: 0.5       # warm-start noise σ: mix previous plan with noise before re-running flow
 flow_mlp_dim: 512          # hidden dim of flow velocity network
+flow_no_context: false     # if true, flow prior is unconditional (ignores latent state)
+
+# prior type: 'flow' (CFM) or 'diffusion' (DDPM/DDIM)
+prior_type: flow
+dp_num_train_timesteps: 100   # T for DDPM training
+dp_num_infer_timesteps: 100   # DDIM inference steps at eval
+dp_down_dims: [256, 512]      # UNet channel sizes (2 levels suits H=5)
+dp_diffusion_step_embed: 256  # timestep embedding dim
+dp_kernel_size: 5             # Conv1d kernel size
+dp_n_groups: 8                # GroupNorm groups
+dp_use_ema: true              # EMA shadow copy for inference
+dp_lr_warmup_steps: 500       # cosine LR warmup steps
 
 # planning (evaluation)
 flow_modes: 4              # M parallel initializations from flow prior
@@ -71,6 +85,8 @@ plan_noise_std: 0.05       # exploration noise added to selected action
 # action regularization in planning cost
 action_reg_u: 0.01         # λ_u: action magnitude penalty
 action_reg_delta: 0.01     # λ_Δ: action smoothness penalty
+value_weight: 1.0          # weight on terminal value in planning cost (0 = disable V)
+plan_horizon: 0            # 0 = use training horizon; >0 = extend with zero-padded steps at eval
 
 # architecture
 model_size: 5
@@ -83,11 +99,18 @@ dropout: 0.01
 simnorm_dim: 8
 
 # logging
-wandb_project: ???
-wandb_entity: ???
+wandb_project: rewmpc
+wandb_entity: bxtbold
 wandb_silent: false
 enable_wandb: true
 save_csv: true
+
+# observation normalization
+normalize_obs: false
+
+# offline RL conservatism
+plan_unc_coef: 0.0      # per-step reward trust decay: reward_k *= (1 - coef)^k
+cql_alpha: 0.0          # CQL value penalty weight (pushes down V for random-action successors)
 
 # misc
 save_agent: true

@@ -6,6 +6,7 @@ from common import math_utils
 from networks.world_model import WorldModel
 from networks.surrogates import RewardSurrogate, ValueSurrogate
 from networks.flow_prior import FlowPrior, compute_return_weights
+from networks.diffusion_prior import DiffusionPrior
 
 
 class ReWMPC(nn.Module):
@@ -25,7 +26,8 @@ class ReWMPC(nn.Module):
 		self.model = WorldModel(cfg).to(self.device)
 		self.reward_surrogate = RewardSurrogate(cfg).to(self.device)
 		self.value_surrogate = ValueSurrogate(cfg).to(self.device)
-		self.flow_prior = FlowPrior(cfg).to(self.device)
+		_prior_cls = DiffusionPrior if getattr(cfg, 'prior_type', 'flow') == 'diffusion' else FlowPrior
+		self.flow_prior = _prior_cls(cfg).to(self.device)
 
 		# Phase 1: encoder + GRU + dynamics
 		self.world_optim = torch.optim.AdamW([
@@ -39,8 +41,13 @@ class ReWMPC(nn.Module):
 		self.reward_optim = torch.optim.AdamW(self.reward_surrogate.parameters(), lr=cfg.lr)
 		self.value_optim = torch.optim.AdamW(self.value_surrogate.parameters(), lr=cfg.lr)
 
-		# Phase 3: flow prior
-		self.flow_optim = torch.optim.AdamW(self.flow_prior.parameters(), lr=cfg.flow_lr)
+		# Phase 3: flow prior — use DP-tuned betas when prior_type=diffusion
+		_dp = getattr(cfg, 'prior_type', 'flow') == 'diffusion'
+		self.flow_optim = torch.optim.AdamW(
+			self.flow_prior.parameters(), lr=cfg.flow_lr,
+			betas=(0.95, 0.999) if _dp else (0.9, 0.999),
+			weight_decay=1e-6 if _dp else 1e-4,
+		)
 
 		self.discount = (
 			torch.tensor([self._get_discount(ep_len) for ep_len in cfg.episode_lengths], device=self.device)
@@ -69,18 +76,50 @@ class ReWMPC(nn.Module):
 			'flow_prior': self.flow_prior.state_dict(),
 		}, fp)
 
+	@staticmethod
+	def _migrate_reward_surrogate_sd(sd):
+		"""Convert old spectral_norm_mlp / nn.ModuleList state dict to Ensemble format.
+
+		Old keys: _heads.{k}.{layer}.0.weight_orig, _heads.{k}.{layer}.1.weight (LN), ...
+		New keys: _heads.params.{layer}.weight (stacked K×out×in), _heads.params.{layer}.ln.*
+		"""
+		if '_heads.params.0.weight' in sd:
+			return sd  # already new format
+
+		K = max(int(k.split('.')[1]) for k in sd if k.startswith('_heads.')) + 1
+		new = {}
+		for layer_idx, ln_sub in enumerate(['0', '1']):
+			new[f'_heads.params.{layer_idx}.weight'] = torch.stack(
+				[sd[f'_heads.{k}.{layer_idx}.0.weight_orig'] for k in range(K)])
+			new[f'_heads.params.{layer_idx}.bias'] = torch.stack(
+				[sd[f'_heads.{k}.{layer_idx}.0.bias'] for k in range(K)])
+			new[f'_heads.params.{layer_idx}.ln.weight'] = torch.stack(
+				[sd[f'_heads.{k}.{layer_idx}.1.weight'] for k in range(K)])
+			new[f'_heads.params.{layer_idx}.ln.bias'] = torch.stack(
+				[sd[f'_heads.{k}.{layer_idx}.1.bias'] for k in range(K)])
+		# Output linear (no LayerNorm)
+		new['_heads.params.2.weight'] = torch.stack(
+			[sd[f'_heads.{k}.2.weight_orig'] for k in range(K)])
+		new['_heads.params.2.bias'] = torch.stack(
+			[sd[f'_heads.{k}.2.bias'] for k in range(K)])
+		return new
+
 	def load(self, fp):
 		if isinstance(fp, dict):
 			state_dict = fp
 		else:
 			state_dict = torch.load(fp, map_location=self.device, weights_only=False)
-		self.model.load_state_dict(state_dict['model'])
+		self.model.load_state_dict(state_dict['model'], strict=False)
 		if 'reward_surrogate' in state_dict:
-			self.reward_surrogate.load_state_dict(state_dict['reward_surrogate'])
+			rs_sd = self._migrate_reward_surrogate_sd(state_dict['reward_surrogate'])
+			self.reward_surrogate.load_state_dict(rs_sd)
 		if 'value_surrogate' in state_dict:
 			self.value_surrogate.load_state_dict(state_dict['value_surrogate'])
 		if 'flow_prior' in state_dict:
-			self.flow_prior.load_state_dict(state_dict['flow_prior'])
+			skip = (getattr(self.cfg, 'flow_no_context', False) or
+			        getattr(self.cfg, 'prior_type', 'flow') != 'flow')
+			if not skip:
+				self.flow_prior.load_state_dict(state_dict['flow_prior'])
 
 	def act(self, obs, t0=False, eval_mode=False, task=None):
 		"""
@@ -118,13 +157,19 @@ class ReWMPC(nn.Module):
 		cfg = self.cfg
 
 		with torch.no_grad():
-			context = self.model.context(h_t, z_t, task)
+			if getattr(cfg, 'flow_no_context', False):
+				context = torch.zeros(1, 0, device=self.device)
+			else:
+				context = self.model.context(h_t, z_t, task)
+
+			H_plan = getattr(cfg, 'plan_horizon', 0) or cfg.horizon
 
 			sigma = getattr(cfg, 'flow_warm_noise', 0.0)
 			if self._tau_prev is not None and sigma > 0:
-				# Shift plan forward by 1 step (first action was executed), pad end with zeros
+				# Warm-start uses only the first cfg.horizon steps (flow prior output size)
+				prev_h = self._tau_prev[:, :cfg.horizon, :]  # (M, H, action_dim)
 				tau_shifted = torch.cat([
-					self._tau_prev[:, 1:, :],
+					prev_h[:, 1:, :],
 					torch.zeros(cfg.flow_modes, 1, cfg.action_dim, device=self.device),
 				], dim=1).reshape(cfg.flow_modes, -1)
 				# Mix with noise and re-run the tail of the flow ODE
@@ -135,6 +180,11 @@ class ReWMPC(nn.Module):
 				                                  tau_warm=tau_warm, s_start=s_start)
 			else:
 				tau_init = self.flow_prior.sample(context, M=cfg.flow_modes, nfe=cfg.flow_nfe)
+
+			# If plan_horizon > training horizon, pad flow proposals with zeros for extra steps
+			if H_plan > cfg.horizon:
+				extra = torch.zeros(cfg.flow_modes, H_plan - cfg.horizon, cfg.action_dim, device=self.device)
+				tau_init = torch.cat([tau_init, extra], dim=1)  # (M, H_plan, action_dim)
 
 		# Freeze model parameters during planning so backward only touches tau
 		frozen_params = (
@@ -147,13 +197,13 @@ class ReWMPC(nn.Module):
 			p.requires_grad_(False)
 
 		try:
+			z_expand = z_t.expand(cfg.flow_modes, -1)  # (M, latent_dim)
+			h_expand = h_t.expand(cfg.flow_modes, -1)  # (M, latent_dim)
+			discount = self.discount[task].item() if cfg.multitask else float(self.discount)
+
 			with torch.enable_grad():
 				tau = tau_init.detach().clone().requires_grad_(True)
 				optimizer = torch.optim.Adam([tau], lr=cfg.grad_plan_lr)
-
-				z_expand = z_t.expand(cfg.flow_modes, -1)  # (M, latent_dim)
-				h_expand = h_t.expand(cfg.flow_modes, -1)  # (M, latent_dim)
-				discount = self.discount[task].item() if cfg.multitask else float(self.discount)
 
 				for _ in range(cfg.grad_plan_steps):
 					optimizer.zero_grad()
@@ -205,6 +255,7 @@ class ReWMPC(nn.Module):
 		J = torch.zeros(M, device=tau.device)
 		z = z_t
 		discount_k = 1.0
+		unc_coef = getattr(cfg, 'plan_unc_coef', 0.0)
 
 		for k in range(H):
 			a_k = tau[:, k]  # (M, action_dim)
@@ -214,13 +265,15 @@ class ReWMPC(nn.Module):
 			reg = (cfg.action_reg_u * a_k.pow(2).sum(-1) +
 				   cfg.action_reg_delta * (a_k - prev_a).pow(2).sum(-1))
 
-			J = J + discount_k * (-r_lcb + reg)
+			# Model uncertainty: trust in surrogate reward decays with planning depth
+			depth_trust = (1.0 - unc_coef) ** k if unc_coef > 0.0 else 1.0
+			J = J + discount_k * (-r_lcb * depth_trust + reg)
 			discount_k = discount_k * discount
 
 			z = self.model.next(z, a_k, h_t)  # differentiable rollout
 
 		v_terminal = self.value_surrogate.expected(z).squeeze(-1)  # (M,)
-		J = J - discount_k * v_terminal
+		J = J - getattr(cfg, 'value_weight', 1.0) * discount_k * v_terminal
 
 		# Conservatism: squared deviation from flow initialization
 		J = J + cfg.flow_alpha * self.flow_prior.log_prior_penalty(tau, tau_init)
@@ -299,6 +352,8 @@ class ReWMPC(nn.Module):
 		self.reward_surrogate.train()
 		self.value_surrogate.train()
 
+		assert not reward.isnan().any(), "NaN reward in surrogate update — check buffer episode masking"
+
 		with torch.no_grad():
 			T, B = obs.shape[0], obs.shape[1]
 			obs_flat = obs.reshape(T * B, obs.shape[-1])
@@ -340,6 +395,17 @@ class ReWMPC(nn.Module):
 		)
 		value_loss = self.value_surrogate.td_loss(zs[0], td_targets)
 
+		cql_alpha = getattr(self.cfg, 'cql_alpha', 0.0)
+		if cql_alpha > 0.0:
+			# CQL penalty: push down value for states reached via random (OOD) actions.
+			# Uses the dynamics model to generate model-reachable but action-OOD states.
+			with torch.no_grad():
+				a_rand = torch.rand(B, self.cfg.action_dim, device=self.device) * 2 - 1
+				h0 = torch.zeros(B, self.cfg.latent_dim, device=self.device)
+				z_ood = self.model.next(zs[0].detach(), a_rand, h0)
+			v_ood = self.value_surrogate.expected(z_ood).squeeze(-1)
+			value_loss = value_loss + cql_alpha * v_ood.mean()
+
 		self.value_optim.zero_grad(set_to_none=True)
 		value_loss.backward()
 		nn.utils.clip_grad_norm_(self.value_surrogate.parameters(), self.cfg.grad_clip_norm)
@@ -364,13 +430,18 @@ class ReWMPC(nn.Module):
 		"""
 		self.flow_prior.train()
 
+		assert not reward.isnan().any(), "NaN reward in flow update — check buffer episode masking"
+
 		with torch.no_grad():
 			T, B = obs.shape[0], obs.shape[1]
 			obs_flat = obs.reshape(T * B, obs.shape[-1])
 			task_flat = task.repeat(T) if task is not None else None
 			zs = self.model.encode(obs_flat, task_flat).view(T, B, -1)
 			h0 = torch.zeros(B, self.cfg.latent_dim, device=self.device)
-			context = self.model.context(h0, zs[0], task)
+			if getattr(self.cfg, 'flow_no_context', False):
+				context = torch.zeros(B, 0, device=self.device)
+			else:
+				context = self.model.context(h0, zs[0], task)
 
 		# Demonstration trajectories as target: flatten (H, B, A) → (B, H*A)
 		tau_1 = action.permute(1, 0, 2).reshape(B, -1)
@@ -388,6 +459,8 @@ class ReWMPC(nn.Module):
 		flow_loss.backward()
 		nn.utils.clip_grad_norm_(self.flow_prior.parameters(), self.cfg.grad_clip_norm)
 		self.flow_optim.step()
+		if hasattr(self.flow_prior, 'update_ema'):
+			self.flow_prior.update_ema()
 		self.flow_prior.eval()
 
 		return TensorDict({

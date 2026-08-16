@@ -59,11 +59,13 @@ class Buffer:
 		"""Load a batch of episodes (same format as TD-MPC2 offline datasets)."""
 		num_new_eps = len(td)
 		episode_idx = torch.arange(self._num_eps, self._num_eps + num_new_eps, dtype=torch.int64)
-		td['episode'] = episode_idx.unsqueeze(-1).expand(-1, td['reward'].shape[1])
+		td['episode'] = episode_idx.unsqueeze(-1).expand(-1, td['reward'].shape[1]).clone()
 		if self._num_eps == 0:
 			self._buffer = self._init(td[0])
-		td = td.reshape(td.shape[0] * td.shape[1])
-		self._buffer.extend(td)
+		# Flatten then strip NaN-padded steps so they never enter the buffer
+		td_flat = td.reshape(td.shape[0] * td.shape[1])
+		td_flat = td_flat[~td_flat['reward'].isnan()]
+		self._buffer.extend(td_flat)
 		self._num_eps += num_new_eps
 		return self._num_eps
 

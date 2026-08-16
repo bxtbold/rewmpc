@@ -53,6 +53,11 @@ class WorldModel(nn.Module):
 
 		self.apply(init.weight_init)
 
+		if getattr(cfg, 'normalize_obs', False):
+			obs_dim = cfg.obs_shape[cfg.obs][0]
+			self.register_buffer('obs_mean', torch.zeros(obs_dim))
+			self.register_buffer('obs_std', torch.ones(obs_dim))
+
 	def __repr__(self):
 		parts = [
 			'ReW-MPC World Model',
@@ -79,6 +84,8 @@ class WorldModel(nn.Module):
 
 	def encode(self, obs, task):
 		"""Encode observation to latent state (live encoder)."""
+		if getattr(self, 'obs_mean', None) is not None:
+			obs = (obs - self.obs_mean) / (self.obs_std + 1e-8)
 		if self.cfg.multitask:
 			obs = self.task_emb(obs, task)
 		return self._encoder[self.cfg.obs](obs)
@@ -86,6 +93,8 @@ class WorldModel(nn.Module):
 	@torch.no_grad()
 	def encode_ema(self, obs, task):
 		"""Encode observation to latent state (EMA target encoder, stop-gradient)."""
+		if getattr(self, 'obs_mean', None) is not None:
+			obs = (obs - self.obs_mean) / (self.obs_std + 1e-8)
 		if self.cfg.multitask:
 			obs = self.task_emb(obs, task)
 		return self._ema_encoder[self.cfg.obs](obs)

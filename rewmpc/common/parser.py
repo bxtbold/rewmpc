@@ -1,5 +1,6 @@
 import dataclasses
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,11 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 		except Exception:
 			pass
 
-	cfg.work_dir = Path(hydra.utils.get_original_cwd()) / 'logs' / cfg.task / str(cfg.seed) / cfg.exp_name
+	run_id = cfg.get('run_id', '')
+	if run_id == 'auto':
+		run_id = datetime.now().strftime('%m%d_%H%M')
+	exp_dir = f'{cfg.exp_name}_{run_id}' if run_id else cfg.exp_name
+	cfg.work_dir = Path(hydra.utils.get_original_cwd()) / 'logs' / cfg.task / str(cfg.seed) / exp_dir
 	cfg.task_title = cfg.task.replace("-", " ").title()
 	cfg.bin_size = (cfg.vmax - cfg.vmin) / (cfg.num_bins - 1)
 
@@ -65,8 +70,11 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 		cfg.task_dim = 0
 	cfg.tasks = TASK_SET.get(cfg.task, [cfg.task])
 
-	# Flow prior context dim: h_t + z_t + task_emb
-	cfg.flow_context_dim = 2 * cfg.latent_dim + cfg.task_dim
+	# Flow prior context dim: h_t + z_t + task_emb (0 if unconditional)
+	if getattr(cfg, 'flow_no_context', False):
+		cfg.flow_context_dim = 0
+	else:
+		cfg.flow_context_dim = 2 * cfg.latent_dim + cfg.task_dim
 
 	# Total offline training steps (used by Buffer and Logger)
 	cfg.steps = cfg.phase1_steps + cfg.phase2_steps + cfg.phase3_steps

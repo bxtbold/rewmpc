@@ -1,4 +1,5 @@
 import os
+import math
 from copy import deepcopy
 from time import time
 from pathlib import Path
@@ -51,7 +52,7 @@ class OfflineTrainer(Trainer):
 
 	def _load_dataset(self):
 		"""Load TD-MPC2-compatible offline dataset."""
-		if self.cfg.task.startswith('mw-'):
+		if self.cfg.task.startswith('mw-') or self.cfg.task.startswith('pm-'):
 			# Single-task: look for <task>.pt in data_dir
 			fps = [str(Path(self.cfg.data_dir) / f'{self.cfg.task}.pt')]
 			assert Path(fps[0]).exists(), f'No data found at {fps[0]}'
@@ -65,23 +66,35 @@ class OfflineTrainer(Trainer):
 			print(f'WARNING: expected {n_expected} files, found {len(fps)}.')
 
 		_cfg = deepcopy(self.cfg)
-		# MetaWorld tasks (mt10, mt80, and single mw-*) use 101-step episodes
-		_is_mw = self.cfg.task in {'mt10', 'mt80'} or self.cfg.task.startswith('mw-')
-		_cfg.episode_length = 101 if _is_mw else 501
 		_cfg.buffer_size = (
 			550_450_000 if self.cfg.task == 'mt80' else
 			50_000_000  if self.cfg.task == 'mt10' else
 			5_000_000   if self.cfg.task.startswith('mw-') else
+			500_000     if self.cfg.task.startswith('pm-') else
 			345_690_000
 		)
 		_cfg.steps = _cfg.buffer_size
-		self.buffer = Buffer(_cfg)
+		self.buffer = None
+		_obs_chunks = [] if getattr(self.cfg, 'normalize_obs', False) else None
 		for fp in tqdm(fps, desc='Loading data'):
 			td = torch.load(fp, weights_only=False)
-			assert td.shape[1] == _cfg.episode_length, \
-				f'Episode length mismatch: got {td.shape[1]}, expected {_cfg.episode_length}'
+			if self.buffer is None:
+				_cfg.episode_length = td.shape[1]
+				self.buffer = Buffer(_cfg)
 			self.buffer.load(td)
+			if _obs_chunks is not None:
+				_obs_chunks.append(td['obs'].float().reshape(-1, td['obs'].shape[-1]))
 		print(f'Dataset loaded: {self.buffer.num_eps} episodes.')
+		if _obs_chunks is not None:
+			all_obs = torch.cat(_obs_chunks, dim=0)
+			del _obs_chunks
+			obs_mean = all_obs.mean(0)
+			obs_std = all_obs.std(0).clamp(min=1e-3)
+			del all_obs
+			self.agent.model.obs_mean.copy_(obs_mean.to(self.agent.device))
+			self.agent.model.obs_std.copy_(obs_std.to(self.agent.device))
+			print(f'[normalize_obs] mean={obs_mean.tolist()}')
+			print(f'[normalize_obs] std= {obs_std.tolist()}')
 
 	def _sample_batch(self):
 		"""Sample a training batch and return (obs, action, reward, task)."""
@@ -97,8 +110,10 @@ class OfflineTrainer(Trainer):
 
 	def train(self):
 		"""Run the 3-phase training curriculum."""
-		assert self.cfg.task in {'mt10', 'mt30', 'mt80'} or self.cfg.task.startswith('mw-'), \
-			'Offline training requires task=mt10/mt30/mt80 or a single mw-<task>.'
+		assert (self.cfg.task in {'mt10', 'mt30', 'mt80'}
+		        or self.cfg.task.startswith('mw-')
+		        or self.cfg.task.startswith('pm-')), \
+			'Offline training requires task=mt10/mt30/mt80, mw-<task>, or pm-<task>.'
 		self._load_dataset()
 		metrics = {}
 		resume_phase = getattr(self.cfg, 'resume_phase', 0)
@@ -125,7 +140,10 @@ class OfflineTrainer(Trainer):
 			print('[Phase 1] Complete.')
 
 		# ---- Phase 2: Surrogates ----
-		if resume_phase >= 3:
+		if resume_phase >= 4:
+			print('[Phase 2] Skipped — loading saved checkpoint.')
+			self._load_phase('final')
+		elif resume_phase >= 3:
 			print('[Phase 2] Skipped — loading saved checkpoint.')
 			self._load_phase('phase2')
 		else:
@@ -146,12 +164,28 @@ class OfflineTrainer(Trainer):
 			print('[Phase 2] Complete.')
 
 		# ---- Phase 3: Flow prior ----
-		print(f'\n[Phase 3] Training flow prior for {self.cfg.phase3_steps} steps...')
+		start_step = getattr(self.cfg, 'phase3_start_step', 0)
+		print(f'\n[Phase 3] Training flow prior for {self.cfg.phase3_steps} steps (starting from step {start_step})...')
 		bootstrap_steps = int(self.cfg.flow_bootstrap_frac * self.cfg.phase3_steps)
-		for i in tqdm(range(self.cfg.phase3_steps), desc='Phase 3'):
+
+		# Cosine LR schedule with warmup for diffusion prior
+		flow_scheduler = None
+		if getattr(self.cfg, 'prior_type', 'flow') == 'diffusion':
+			warmup = getattr(self.cfg, 'dp_lr_warmup_steps', 500)
+			total  = self.cfg.phase3_steps - start_step
+			flow_scheduler = torch.optim.lr_scheduler.LambdaLR(
+				self.agent.flow_optim,
+				lr_lambda=lambda s: min((s + 1) / warmup, 1.0) * 0.5 * (
+					1 + math.cos(math.pi * max(s - warmup, 0) / max(total - warmup, 1))
+				)
+			)
+
+		for i in tqdm(range(start_step, self.cfg.phase3_steps), desc='Phase 3'):
 			obs, action, reward, task = self._sample_batch()
 			use_weights = (i >= bootstrap_steps)
 			train_metrics = self.agent.update_flow(obs, action, reward, task, use_weights=use_weights)
+			if flow_scheduler is not None:
+				flow_scheduler.step()
 
 			step_global = self.cfg.phase1_steps + self.cfg.phase2_steps + i
 			if i > 0 and i % self.cfg.eval_freq == 0:

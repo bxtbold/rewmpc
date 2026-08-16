@@ -44,7 +44,10 @@ class FlowPrior(nn.Module):
 			s = s.expand(tau_s.shape[0], 1)
 		elif s.dim() == 1:
 			s = s.unsqueeze(-1)
-		inp = torch.cat([tau_s, s, context], dim=-1)
+		if context.shape[-1] > 0:
+			inp = torch.cat([tau_s, s, context], dim=-1)
+		else:
+			inp = torch.cat([tau_s, s], dim=-1)
 		return self._net(inp)
 
 	def cfm_loss(self, tau_1, context, weights=None):
